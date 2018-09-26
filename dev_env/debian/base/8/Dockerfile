@@ -61,13 +61,17 @@ RUN	apt-get install -y \
 #	wget -O - http://download.opensuse.org/repositories/network:/messaging:/zeromq:/git-draft/xUbuntu_16.04/Release.key | apt-key add -
 # note: ppa:ubuntu-toolchain-r/test is currently the best repo for gcc-7 we can find...
 
+RUN	echo 'deb http://download.opensuse.org/repositories/network:/messaging:/zeromq:/release-stable/Debian_8.0/ /' > /etc/apt/sources.list.d/network:messaging:zeromq:release-stable.list && \
+	wget -nv https://download.opensuse.org/repositories/network:messaging:zeromq:release-stable/Debian_8.0/Release.key -O Release.key && \
+	apt-key add - < Release.key
+
 RUN	apt-get update -y && \
 	apt-get install -y \
 	libestr-dev \
-	libsodium-dev
+	libsodium-dev \
+	libczmq-dev 
 #	clang-tools-5.0 
 #	libfastjson-dev 
-#	libczmq-dev 
 #	clang-5.0 
 #	gcc-7 
 #	libqpid-proton10-dev 
@@ -219,7 +223,7 @@ ENV RSYSLOG_CONFIGURE_OPTIONS \
 	--enable-elasticsearch-tests \
 	--enable-gnutls \
 	--enable-gssapi-krb5 \
-	--disable-imczmq \
+	--enable-imczmq \
 	--enable-imdiag \
 	--enable-imfile \
 	--enable-imjournal \
@@ -249,7 +253,7 @@ ENV RSYSLOG_CONFIGURE_OPTIONS \
 	--enable-mmutf8fix \
 	--enable-mysql \
 	--disable-omamqp1 \
-	--disable-omczmq \
+	--enable-omczmq \
 	--enable-omhiredis \
 	--enable-omhttpfs \
 	--enable-omjournal \
