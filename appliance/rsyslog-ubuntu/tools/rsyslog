@@ -1,0 +1,7 @@
+# This NEEDS to be sourced (else we don't get PID 1!)
+source internal/build-config
+if [ "$USE_VALGRIND" = "on" ]; then
+   exec $VALGRIND /usr/sbin/rsyslogd -n $RSYSLOG_DEBUG_FLAG -f$RSYSLOG_CONF
+else
+   exec /usr/sbin/rsyslogd -n $RSYSLOG_DEBUG_FLAG -f$RSYSLOG_CONF
+fi
