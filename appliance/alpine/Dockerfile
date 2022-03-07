@@ -58,6 +58,7 @@ COPY    internal/container_config /config/
 COPY    internal/droprules.conf /config/
 COPY    tools/* ./tools/
 COPY    custom-builds/* /usr/lib/rsyslog/
+COPY    custom-builds-liblog/* /usr/lib/
 RUN     echo "`date +%F` (`date +%s`)" > CONTAINER.release \
         && chown -R rsyslog:rsyslog * && \
         chmod +x starter.sh
