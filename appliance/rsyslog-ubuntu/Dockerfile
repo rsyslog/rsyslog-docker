@@ -9,6 +9,7 @@ RUN	apt-get -y update \
 	&& add-apt-repository -y ppa:adiscon/v8-stable \
 	&& apt-get -y update \
 	&& apt-get -y install libfastjson4 \
+           libmaxminddb0 \
            rsyslog \
            rsyslog-mmjsonparse \
            rsyslog-pgsql \
