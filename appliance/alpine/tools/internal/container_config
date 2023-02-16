@@ -9,7 +9,7 @@ export TZ=UTC
 export ENABLE_STATISTICS=on
 
 # Do we write log files?
-export ENABLE_LOGFILES=off # (comment out to disable)
+export ENABLE_LOGFILES=on # yes, we do (comment out to disable)
 # Where do we write to?
 # path for host-specific files is: /logs/hosts/HOSTNAME
 export LOGFILES_STORE="/logs/hosts/%hostname:::secpath-replace%/messages.log"

@@ -6,8 +6,7 @@ if [ "$CONTAINER_SILENT" != "on" ]; then
 	echo `cat CONTAINER.name` version `cat CONTAINER.release` - `cat CONTAINER.homepage`
 	echo `cat CONTAINER.copyright`
 	echo
-	echo "This container is build for production."
-	echo "See online: https://github.com/EHerzog76/rsyslog-docker"
+	echo "WARNING: this is an experimental container - do not use in production"
 	echo
 fi
 
@@ -41,7 +40,6 @@ echo "Using rsyslog configuration file: $RSYSLOG_CONF"
 
 
 if [ -f tools/$1 ]; then
-        #rsyslogd -D -N 1 -f /etc/rsyslog.conf
 	source tools/$1
 else
 	echo "ERROR: command not known: $*"
