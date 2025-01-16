@@ -1,4 +1,4 @@
-#!/bin/ash
+#!/bin/bash
 source internal/set-defaults
 source /config/container_config
 
