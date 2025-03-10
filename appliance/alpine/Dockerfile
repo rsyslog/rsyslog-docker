@@ -11,7 +11,8 @@ RUN	echo "http://alpine.rsyslog.com/3.7/stable" >> /etc/apk/repositories \
 	   rsyslog-mmjsonparse \
 	   rsyslog-mmutf8fix \
 	   rsyslog-omrelp \
-	   rsyslog-omstdout
+	   rsyslog-omstdout \
+	   rsyslog-tls
 RUN	adduser -s /bin/ash -D rsyslog rsyslog \
 	&& echo "rsyslog ALL=(ALL) NOPASSWD:ALL" >> /etc/sudoers
 VOLUME	/config /work /logs
