@@ -63,3 +63,7 @@ To start from scratch, do
 
 * **Remember to periodically apply (security) updates to the docker
   images!**
+
+### Usage Notes
+
+* Hostname Templates - If you run this in a cluster environment with load balancing or any other networking layer that may hide or change the client IP address, you may need to configure your cluster service that exposes rsyslog to ensure that the actual client IP address makes it through to rsyslog.
