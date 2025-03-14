@@ -1,0 +1,847 @@
+---
+apiVersion: v1
+kind: Service
+metadata:
+  namespace: "logging"
+  name: "service-rsyslog"
+spec:
+  internalTrafficPolicy: Cluster
+  ports:
+    - name: syslog514tcp
+      port: 514
+      targetPort: 514
+      protocol: TCP
+    - name: syslog514udp
+      port: 514
+      targetPort: 514
+      protocol: UDP
+    - name: ciscoftd
+      port: 9003
+      targetPort: 9003
+      protocol: UDP
+    - name: fortinetfw
+      port: 9004
+      targetPort: 9004
+      protocol: UDP
+    - name: checkpoint
+      port: 9501
+      targetPort: 9501
+      protocol: UDP
+    - name: f5ltm
+      port: 9544
+      targetPort: 9544
+      protocol: UDP
+  sessionAffinity: None
+  type: ClusterIP
+  selector:
+    app: "rsyslog4elk"
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: rsyslog-configmap
+  labels:
+    app: rsyslog4elk
+data:
+  rsyslog.conf: |
+    # For more information see /usr/share/doc/rsyslog-*/rsyslog_conf.html
+    #### MODULES ####
+    # omfwd is a Bultin-Modul, so no Modul-Load is needed.
+    #module(load="omfwd")    # syslog Forwarding Output Module for TCP and UDP
+    # Provides UDP syslog reception
+    # for parameters see http://www.rsyslog.com/doc/imudp.html
+    module(load="imudp" threads="4" timeRequery="2" batchSize="128") # needs to be done just once
+    # Provides TCP syslog reception
+    # for parameters see http://www.rsyslog.com/doc/imtcp.html
+    module(load="imtcp") # needs to be done just once
+    # Provides Message-Formating and Elasticsearch-Forwarding
+    #module(load="mmpstrucdata")    # RFC5424 Parsingmodul
+    module(load="mmnormalize")
+    #module(load="mmexternal")
+    module(load="omelasticsearch")
+    #### GLOBAL DIRECTIVES ####
+    global(net.enableDNS="off")
+    main_queue(
+      # buffer up to 1M messages in memory
+      queue.size="1000000"
+      # these threads process messages and send them to Elasticsearch
+      queue.workerThreads="5"
+      queue.type="LinkedList"
+      #    FixedArray/LinkedList/Direct/Disk
+      # rsyslog processes messages in batches to avoid queue contention
+      queue.dequeueBatchSize="1000"
+      queue.highWatermark="610000"    # max no. of events to hold in memory
+      queue.lowWatermark="300000"     # use memory queue again, when it's back to this level
+      queue.spoolDirectory="/rsyslog-queues"  # where to write on disk
+      queue.fileName="main-queue"
+      queue.maxDiskSpace="10g"       # it will stop at this much disk space
+      queue.saveOnShutdown="off"     # save memory queue contents to disk when rsyslog is exiting. User persistent Disk.
+    )
+    # Use default timestamp format
+    $ActionFileDefaultTemplate RSYSLOG_TraditionalFileFormat
+    # Include all config files in /etc/rsyslog.d/
+    $IncludeConfig /etc/rsyslog.d/*.conf
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: rsyslog-d
+  labels:
+    app: rsyslog4elk
+data:
+  global.conf: |
+    #module(load="mmdblookup" container="!geoip")
+    #### Lookup Tables ####
+    lookup_table(name="ftd-iptable" file="/etc/rsyslog.d/lookup_ftd.tbl")
+    #### TEMPLATES ####
+    template(name="tplRawMsg" type="string" string="%timegenerated% %fromhost% %rawmsg:::drop-last-lf%\n")
+    template(name="tplPlainMsg" type="string" string="%rawmsg:::drop-last-lf%\n")
+    template(name="syslogmsg" type="list") {
+      constant(value="syslogmsg")
+    }
+    template(name="plain-syslog" type="list" option.json="on") {
+        constant(value="{")
+          constant(value="\"@timestamp\":\"")    property(name="timereported" dateFormat="rfc3339")
+          constant(value="\",\"host\":\"")       property(name="hostname")
+          constant(value="\",\"severity\":\"")   property(name="syslogseverity-text")
+          constant(value="\",\"facility\":\"")   property(name="syslogfacility-text")
+          constant(value="\",\"tag\":\"")        property(name="syslogtag")
+          constant(value="\",\"message\":\"")    property(name="msg")
+        constant(value="\"}")
+    }
+    # Checkpoint-Syslog to Elastic ConnectionEvents
+    template(name="CPSyslog-IPConEvents" type="list" option.json="on") {
+            constant(value="{")
+            constant(value="\"@timestamp\":\"")     property(name="timegenerated" dateFormat="rfc3339")
+    #       constant(value="\"@timestamp\":\"")     property(name="$!eventdate" dateFormat="rfc3339")
+    #        constant(value="\",\"eventsource\":\"") property(name="$!loghost")
+            constant(value="\",\"eventsource\":\"") property(name="fromhost")
+            constant(value="\",\"eventorigin\":\"") property(name="$!logsource")
+            constant(value="\",\"action\":\"")        property(name="$.action")
+            constant(value="\",\"uuid\":\"")        property(name="$.uuid")
+            constant(value="\",\"serviceid\":\"")        property(name="$.service_id")
+            constant(value="\",\"service\":\"")        property(name="$.service")
+            constant(value="\",\"srcport\":\"")        property(name="$.s_port")
+            constant(value="\",\"src\":\"")        property(name="$.src")
+            constant(value="\",\"dst\":\"")        property(name="$.dst")
+            constant(value="\",\"proto\":\"")        property(name="$.proto")
+            constant(value="\",\"natsrc\":\"")        property(name="$.xlatesrc")
+            constant(value="\",\"natdst\":\"")        property(name="$.xlatedst")
+            constant(value="\",\"natsrcport\":\"")        property(name="$.xlatesport")
+            constant(value="\",\"natdstport\":\"")        property(name="$.xlatedport")
+            constant(value="\",\"natrulenr\":\"")        property(name="$.nat_rulenum")
+            constant(value="\",\"natrulenr2\":\"")        property(name="$.nat_addtnl_rulenum")
+            constant(value="\",\"user\":\"")        property(name="$.user")
+            constant(value="\",\"user_dst\":\"")        property(name="$.user_dst")
+            constant(value="\",\"rulenr\":\"")        property(name="$.rule")
+            constant(value="\",\"msginfo\":\"")        property(name="$.message_info")
+            constant(value="\",\"productfam\":\"")        property(name="$.product_family")
+            constant(value="\",\"product\":\"")        property(name="$.product")
+            constant(value="\",\"url\":\"")        property(name="$.resource")
+            constant(value="\"}")
+    }
+    # Cisco Firepower Syslog to Elastic ConnectionEvents
+    template(name="FPSyslog-IPConEvents" type="list" option.json="on") {
+            constant(value="{")
+    #        constant(value="\"@timestamp\":\"")     property(name="timereported" dateFormat="year")
+    #        constant(value="-") property(name="timereported" dateFormat="month")
+    #        constant(value="-") property(name="timereported" dateFormat="day")
+    #        constant(value="T") property(name="timereported" dateFormat="hour")
+    #        constant(value=":") property(name="timereported" dateFormat="minute")
+    #        constant(value=":") property(name="timereported" dateFormat="second")
+    #        constant(value="+00:00")
+    #        constant(value="\"@timestamp\":\"")     property(name="timereported" dateFormat="rfc3339")
+            constant(value="\"@timestamp\":\"")     property(name="$!eventdate" dateFormat="rfc3339")
+            constant(value="\",\"data_stream\": {\"namespace\": \"default\",\"type\": \"logs\",\"dataset\": \"cisco_ftd63.log\"}")
+            constant(value=",\"observer.name\":\"") property(name="$!syslog5424_host")
+            constant(value="\",\"observer.vendor\":\"Cisco")
+            constant(value="\",\"observer.product\":\"Firepower")
+            constant(value="\",\"observer.type\":\"firewall")
+            constant(value="\",\"rule.ruleset\":\"")        property(name="$.rule_ruleset")
+            constant(value="\",\"rule.name\":\"")           property(name="$.rule_name")
+            constant(value="\",\"event.outcome\":\"")       property(name="$.event_outcome")
+            constant(value="\",\"event.action\":\"")        property(name="$.event_action")
+            constant(value="\",\"access_control_rule_reason\":\"")  property(name="$.event_outcome")
+            constant(value="\",\"network.protocol\":\"")     property(name="$.network_protocol")
+            constant(value="\",\"archive_depth\":\"")        property(name="$.archive_depth")
+            constant(value="\",\"archive_file_name\":\"")  property(name="$.archive_file_name")
+            constant(value="\",\"archive_file_status\":\"")  property(name="$.archive_file_status")
+            constant(value="\",\"classification\":\"")       property(name="$.classification")
+            constant(value="\",\"network.application\":\"")  property(name="$.network_application")
+            constant(value="\",\"client_version\":\"")       property(name="$.client_version")
+            constant(value="\",\"event.duration\":\"")       property(name="$.event_duration")
+            constant(value="\",\"dns_sinkhole\":\"")         property(name="$.dns_sinkhole")
+            constant(value="\",\"dns_ttl\":\"")                 property(name="$.dns_ttl")
+            constant(value="\",\"dns.question.name\":\"")    property(name="$.dns_question_name")
+            constant(value="\",\"dns.question.type\":\"")    property(name="$.dns_question_type")
+            constant(value="\",\"dns.response_code\":\"")    property(name="$.dns_response_code")
+            constant(value="\",\"dnssi_category\":\"")       property(name="$.dnssi_category")
+            constant(value="\",\"destination.ip\":\"")       property(name="$.destination_ip")   #destination.address
+            constant(value="\",\"destination.port\":\"")     property(name="$.destination_port")
+            constant(value="\",\"observer.egress.interface.name\":\"")  property(name="$.observer_egress_interface_name")
+            constant(value="\",\"observer.egress.zone\":\"")   property(name="$.observer.egress.zone")
+            constant(value="\",\"endpoint_profile\":\"")       property(name="$.endpoint_profile")
+            constant(value="\",\"file_action\":\"")        property(name="$.file_action")
+            constant(value="\",\"file_count\":\"")         property(name="$.file_count")
+            constant(value="\",\"file_direction\":\"")     property(name="$.file_direction")
+            constant(value="\",\"file.name\":\"")          property(name="$.file_name")
+            constant(value="\",\"file_policy\":\"")        property(name="$.file_policy")
+            constant(value="\",\"file.hash.sha256\":\"")   property(name="$.file_hash_sha256")
+            constant(value="\",\"file_sandbox_status\":\"")  property(name="$.file_sandbox_status")
+            constant(value="\",\"file.size\":\"")            property(name="$.file_size")
+            constant(value="\",\"file_storage_status\":\"")  property(name="$.file_storage_status")
+            constant(value="\",\"event.start\":\"")          property(name="$.event_start")
+            constant(value="\",\"service.id\":\"")        property(name="$.service_id")
+            constant(value="\",\"http.request.referrer\":\"")   property(name="$.http_request_referrer")
+            constant(value="\",\"http.response.status_code\":\"") property(name="$.http_response_status_code")
+            constant(value="\",\"icmp_code\":\"")         property(name="$.icmp_code")
+            constant(value="\",\"icmp_type\":\"")         property(name="$.icmp_type")
+            constant(value="\",\"ip_reputation_si_category\":\"")        property(name="$.ip_reputation_si_category")
+            constant(value="\",\"ips_count\":\"")         property(name="$.ips_count")
+            constant(value="\",\"observer.ingress.interface.name\":\"")        property(name="$.observer_ingress_interface_name")
+            constant(value="\",\"observer.ingress.zone\":\"")   property(name="$.observer.ingress.zone")
+            constant(value="\",\"source.bytes\":\"")        property(name="$.source_bytes")
+            constant(value="\",\"source.packets\":\"")      property(name="$.source_packets")
+            constant(value="\",\"intrusion_policy\":\"")    property(name="$.intrusion_policy")
+            constant(value="\",\"mpls_label\":\"")          property(name="$.mpls_label")
+            constant(value="\",\"message\":\"")             property(name="$.message")
+            constant(value="\",\"nap_policy\":\"")          property(name="$.nap_policy")
+            constant(value="\",\"net_bios_domain\":\"")     property(name="$.net_bios_domain")
+            constant(value="\",\"num_ioc\":\"")             property(name="$.num_ioc")
+            constant(value="\",\"prefilter_policy\":\"")    property(name="$.prefilter_policy")
+            constant(value="\",\"priority\":\"")            property(name="$.priority")
+            constant(value="\",\"network.transport\":\"")   property(name="$.network_transport")
+            constant(value="\",\"url.domain\":\"")          property(name="$.url_domain")
+            constant(value="\",\"destination.bytes\":\"")   property(name="$.destination_bytes")
+            constant(value="\",\"destination.packets\":\"") property(name="$.destination_packets")
+            constant(value="\",\"revision\":\"")            property(name="$.revision")
+            constant(value="\",\"sha_disposition\":\"")     property(name="$.sha_disposition")
+            constant(value="\",\"sid\":\"")                   property(name="$.sid")
+            constant(value="\",\"ssl_certificate\":\"")     property(name="$.ssl_certificate")
+            constant(value="\",\"ssl_expected_action\":\"") property(name="$.ssl_expected_action")
+            constant(value="\",\"ssl_flow_status\":\"")     property(name="$.ssl_flow_status")
+            constant(value="\",\"ssl_policy\":\"")          property(name="$.ssl_policy")
+            constant(value="\",\"ssl_rule_name\":\"")       property(name="$.ssl_rule_name")
+            constant(value="\",\"ssl_server_cert_status\":\"")       property(name="$.ssl_server_cert_status")
+            constant(value="\",\"server.domain\":\"")       property(name="$.server.domain")
+            constant(value="\",\"ssl_session_id\":\"")      property(name="$.ssl_session_id")
+            constant(value="\",\"ssl_ticket_id\":\"")       property(name="$.ssl_ticket_id")
+            constant(value="\",\"sslurl_category\":\"")     property(name="$.sslurl_category")
+            constant(value="\",\"ssl_version\":\"")         property(name="$.ssl_version")
+            constant(value="\",\"ssl_cipher_suite\":\"")    property(name="$.ssl_cipher_suite")
+            constant(value="\",\"sec_int_matching_ip\":\"")       property(name="$.sec_int_matching_ip")
+            constant(value="\",\"security_group\":\"")      property(name="$.security_group")
+            constant(value="\",\"spero_disposition\":\"")   property(name="$.spero_disposition")
+            constant(value="\",\"source.ip\":\"")           property(name="$.source_ip")    #source.address
+            constant(value="\",\"source.port\":\"")         property(name="$.source_port")
+            constant(value="\",\"tcp_flags\":\"")           property(name="$.tcp_flags")
+            constant(value="\",\"threat_name\":\"")         property(name="$.threat_name")
+            constant(value="\",\"threat_score\":\"")        property(name="$.threat_score")
+            constant(value="\",\"tunnel_or_prefilter_rule\":\"")       property(name="$.tunnel_or_prefilter_rule")
+            constant(value="\",\"url.original\":\"")        property(name="$.url_original")
+            constant(value="\",\"url_category\":\"")        property(name="$.url_category")
+            constant(value="\",\"url_reputation\":\"")      property(name="$.url_reputation")
+            constant(value="\",\"urlsi_category\":\"")      property(name="$.urlsi_category")
+            constant(value="\",\"user.name\":\"")           property(name="$.user_name")           #user.id
+            constant(value="\",\"user_agent.original\":\"") property(name="$.user_agent.original")
+            constant(value="\",\"vlan_id\":\"")             property(name="$.vlan_id")
+            constant(value="\",\"client.ip\":\"")           property(name="$.client_ip")           #client.address
+            constant(value="\",\"source.nat.ip\":\"")       property(name="$.source_nat_ip")
+            constant(value="\",\"source.nat.port\":\"")     property(name="$.source_nat_port")
+            constant(value="\",\"destination.nat.ip\":\"")  property(name="$.destination_nat_ip")
+            constant(value="\",\"destination.nat.port\":\"") property(name="$.destination_nat_port")
+            constant(value="\"}")
+    }
+    # f5-LTM-Syslog to Elastic ConnectionEvents
+    template(name="f5-ltmEvents" type="list" option.json="on") {
+        constant(value="{")
+        constant(value="\"@timestamp\":\"")     property(name="timegenerated" dateFormat="rfc3339")
+    #   constant(value="\"@timestamp\":\"")     property(name="$!eventdate" dateFormat="rfc3339")
+    #   constant(value="\",\"eventsource\":\"") property(name="$!loghost")
+        constant(value="\",\"eventsource\":\"") property(name="fromhost")
+        constant(value="\",\"eventorigin\":\"") property(name="$!logsource")
+        constant(value="\",\"observer.vendor\":\"f5")
+        constant(value="\",\"observer.product\":\"BigIP")
+        constant(value="\",\"observer.type\":\"loadbalancer")
+        constant(value="\",\"event.kind\":\"event")
+        constant(value="\",\"event.category\":\"web")
+        constant(value="\",\"event.outcome\":\"")             property(name="$.event_outcome")
+        constant(value="\",\"http.request.method\":\"")       property(name="$.method")
+        constant(value="\",\"destination.domain\":\"")        property(name="$.host")
+        constant(value="\",\"url\":\"")                       property(name="$.uri")
+        constant(value="\",\"source.ip\":\"")                 property(name="$.srcip")
+        constant(value="\",\"user_agent.original\":\"")       property(name="$.uagent")
+        constant(value="\",\"destination.ip\":\"")            property(name="$.vsip")
+        constant(value="\",\"related.ip\":[")                 property(name="$.related_ip")
+        constant(value="],\"vs\":\"")            property(name="$.vs")
+        constant(value="\",\"statusmsg\":\"")    property(name="$.statusmsg")
+        constant(value="\",\"realserver\":\"")   property(name="$.realserver")
+        constant(value="\",\"pool\":\"")         property(name="$.pool")
+        constant(value="\",\"unknown\":\"")      property(name="$.unknown")
+        constant(value="\",\"sessiontime\":")    property(name="$.sessiontime")
+        constant(value=",\"event.duration\":")   property(name="$.rtt")
+        constant(value=",\"reqts\":\"")          property(name="$.reqtime")            # in UNIX_MS
+        constant(value=",\"responsetime\":")     property(name="$.responsetime")
+        constant(value=",\"realport\":")         property(name="$.realport")
+        constant(value=",\"http.response.status_code\":")       property(name="$.status")
+        constant(value=",\"http.response.bytes\":")             property(name="$.bytes")
+       constant(value="}")
+       #geoip:  source.ip  => source.geo, source.as.asn => source.as.number, source.as.organization_name => source.as.organization.name
+       #related.hosts += destination.domain
+    }
+    # RFC5424 to Elastic
+    template(name="rfc5424-syslog" type="list" option.json="on") {
+        constant(value="{")
+          constant(value="\"@timestamp\":\"")    property(name="timereported" dateFormat="rfc3339")
+          constant(value="\",\"host\":\"")       property(name="hostname")
+          constant(value="\",\"severity\":\"")   property(name="syslogseverity-text")
+          constant(value="\",\"facility\":\"")   property(name="syslogfacility-text")
+          constant(value="\",\"tag\":\"")        property(name="syslogtag")
+          constant(value="\",\"message\":\"")    property(name="msg")
+        constant(value="\"}")
+    }
+  imtcp.conf: |
+    #module(load="imtcp")
+    input(type="imtcp" port="514")
+  imudp.conf: |
+    #module(load="imudp")
+    #### RULES ####
+    ruleset(name="rulesetUDPCheckPoint") {
+       action(type="mmnormalize" rulebase="/etc/rsyslog.d/cpfw.rb" userawmsg="on")
+       #ToDo: ...
+
+       ### Forwarding to remote-syslog-server via UDP
+       #action(type="omfwd" Target="172.1.2.3" Port="514" Protocol="udp" Template="tplPlainMsg"
+       #  queue.type="LinkedList"
+       #  queue.dequeuebatchsize="1000"   # bulk size
+       #  queue.size="10000"
+       #  queue.workerthreads="1"
+       #)
+    }
+    #######################################
+    #
+    ruleset(name="rulesetUDPf5LTM") {
+       action(type="mmnormalize" rulebase="/etc/rsyslog.d/f5.rb" userawmsg="on")
+       if ($parsesuccess == "OK") then {
+          set $.related_ip = "";
+          foreach ($.f in $!kvfields) do {
+             if ($.f!k == "srcip") then {
+                 set $.srcip = $.f!v;
+                 if ($.related_ip == "") then {
+                    set $.related_ip = '"' & $.srcip & '"';
+                 } else {
+                    set $.related_ip = $.related_ip & ',"' & $.srcip & '"';
+                 }
+             } else if ($.f!k == 'method') then {
+                 set $.method = $.f!v;
+             } else if ($.f!k == 'host') then {
+                 set $.host = $.f!v;
+             } else if ($.f!k == 'uri') then {
+                 set $.uri = $.f!v;
+             } else if ($.f!k == 'uagent') then {
+                 set $.uagent = $.f!v;
+             } else if ($.f!k == 'vsip') then {
+                 set $.vsip = $.f!v;
+                 if ($.related_ip == "") then {
+                    set $.related_ip = '"' & $.vsip & '"';
+                 } else {
+                    set $.related_ip = $.related_ip & ',"' & $.vsip & '"';
+                 }
+             } else if ($.f!k == 'vsname') then {
+                 set $.vsname = $.f!v;
+             } else if ($.f!k == 'vs') then {
+                 set $.vs = $.f!v;
+             } else if ($.f!k == 'status') then {
+                 set $.status = $.f!v;
+                 if (cnum($.status) < 400) then {
+                     set $.event_outcome = "success";
+                 } else {
+                     set $.event_outcome = "failure";
+                 }
+             } else if ($.f!k == 'responsetime') then {
+                 set $.responsetime = $.f!v;
+             } else if ($.f!k == 'bytes') then {
+                 set $.bytes = $.f!v;
+             } else if ($.f!k == 'realserver') then {
+                 set $.realserver = $.f!v;
+                 if ($.related_ip == "") then {
+                    set $.related_ip = '"' & $.realserver & '"';
+                 } else {
+                    set $.related_ip = $.related_ip & ',"' & $.realserver & '"';
+                 }
+             } else if ($.f!k == 'realport') then {
+                 set $.realport = $.f!v;
+             } else if ($.f!k == 'pool') then {
+                 set $.pool = $.f!v;
+             } else if ($.f!k == 'rtt') then {
+                 set $.rtt = cnum($.f!v)*1000000;
+             } else if ($.f!k == 'sessiontime') then {
+                 set $.sessiontime = $.f!v;
+             } else if ($.f!k == 'reqtime') then {
+                 set $.reqtime = $.f!v;
+             } else {
+                 set $.unknown = $.f!k;
+             }
+          }
+          #action(type="mmdblookup" mmdbfile="/etc/rsyslog.d/GeoLite2-City.mmdb" fields=[":continent:!continent!code", "!location", ":cityname:!city!names!en"] key="$.srcip")
+          #pipelineName="geoip-info"
+          action(type="omelasticsearch" server="elk-es-http.elk.svc.cluster.local:9200/logs-f5ltm.log" template="f5-ltmEvents"
+             usehttps="on" skipverifyhost="on" allowunsignedcerts="on" uid="rsyslog" pwd="******"
+             writeoperation="create" bulkmode="on" action.resumeretrycount="-1"
+             queue.type="LinkedList"
+             queue.dequeuebatchsize="100"   # ES bulk size
+             queue.size="100000"
+             queue.workerthreads="3"
+          )
+          #unset $!kvfields
+        } #else {
+        #   action(type="omfile" file="/var/log/debug-f5-rawgmsg.log" template="tplPlainMs")
+        #}
+    }
+    #######################################
+    #
+    ruleset(name="rulesetUDPCiscoFTD") {
+        set $.tmpmsg = $rawmsg & ", ";
+        action(type="mmnormalize" rulebase="/etc/rsyslog.d/ciscoFP.rb" userawmsg="off" variable="$.tmpmsg")
+        if strlen($!unparsed-data) == 0 then {
+           foreach ($.f in $!kvfields) do {
+              if ($.f!k == 'ACPolicy') then {
+                 set $.rule.ruleset = $.f!v;
+              } else if ($.f!k == 'AccessControlRuleName') then {
+                 set $.rule_name = $.f!v;
+              } else if ($.f!k == 'list_id') then {
+                 set $.rule_name2 = $.f!v;
+              } else if ($.f!k == 'AccessControlRuleAction') then {
+                 set $.event_outcome = $.f!v;
+              } else if ($.f!k == 'AccessControlRuleReason') then {
+                 set $.access_control_rule_reason = $.f!v;
+              } else if ($.f!k == 'ApplicationProtocol') then {
+                 set $.network_protocol = $.f!v;
+              } else if ($.f!k == 'ArchiveDepth') then {
+                 set $.archive_depth = $.f!v;
+              } else if ($.f!k == 'ArchiveFileName') then {
+                 set $.archive_file_name = $.f!v;
+              } else if ($.f!k == 'ArchiveFileStatus') then {
+                 set $.archive_file_status = $.f!v;
+              } else if ($.f!k == 'ArchiveSHA256') then {
+                 set $.file_hash_sha256 = $.f!v;
+              } else if ($.f!k == 'Classification') then {
+                 set $.classification = $.f!v;
+              } else if ($.f!k == 'Client') then {
+                 set $.network_application = $.f!v;
+              } else if ($.f!k == 'ClientVersion') then {
+                 set $.client_version = $.f!v;
+              } else if ($.f!k == 'ConnectionDuration') then {
+                 set $.event_duration = $.f!v;
+              } else if ($.f!k == 'DNS_Sinkhole') then {
+                 set $.dns_sinkhole = $.f!v;
+              } else if ($.f!k == 'DNS_TTL') then {
+                 set $.dns_ttl = $.f!v;
+              } else if ($.f!k == 'DNSQuery') then {
+                 set $.dns_question_name = $.f!v;
+              } else if ($.f!k == 'DNSRecordType') then {
+                 set $.dns_question_type = $.f!v;
+              } else if ($.f!k == 'DNSResponseType') then {
+                 set $.dns_response_code = $.f!v;
+              } else if ($.f!k == 'DNSResponseType') then {
+                 set $.dns_response_code = $.f!v;
+              } else if ($.f!k == 'DNSSICategory') then {
+                 set $.dnssi_category = $.f!v;
+              } else if ($.f!k == 'DstIP') then {
+                 #destination.address=DstIP
+                 set $.destination_ip = $.f!v;
+              } else if ($.f!k == 'DstPort') then {
+                 set $.destination_port = $.f!v;
+              } else if ($.f!k == 'destination_interface') then {
+                 set $.observer_egress_interface_name = $.f!v;
+              } else if ($.f!k == 'EgressInterface') then {
+                 set $.observer_egress_interface_name = $.f!v;
+              } else if ($.f!k == 'EgressZone') then {
+                 set $.observer_egress_zone = $.f!v;
+              } else if ($.f!k == 'Endpoint Profile') then {
+                 set $.endpoint_profile = $.f!v;
+              } else if ($.f!k == 'FileAction') then {
+                 set $.file_action = $.f!v;
+              } else if ($.f!k == 'FileCount') then {
+                 set $.file_count = $.f!v;
+              } else if ($.f!k == 'FileDirection') then {
+                 set $.file_direction = $.f!v;
+              } else if ($.f!k == 'FileName') then {
+                 set $.file_name = $.f!v;
+              } else if ($.f!k == 'FilePolicy') then {
+                 set $.file_policy = $.f!v;
+              } else if ($.f!k == 'FileSHA256') then {
+                 set $.file_hash_sha256 = $.f!v;
+              } else if ($.f!k == 'FileSandboxStatus') then {
+                 set $.file_sandbox_status = $.f!v;
+              } else if ($.f!k == 'FileSize') then {
+                 set $.file_size = $.f!v;
+              } else if ($.f!k == 'FileStorageStatus') then {
+                 set $.file_storage_status = $.f!v;
+              } else if ($.f!k == 'FirstPacketSecond') then {
+                 set $.event_start = $.f!v;
+              } else if ($.f!k == 'GID') then {
+                 set $.service_id = $.f!v;
+              } else if ($.f!k == 'HTTPReferer') then {
+                 set $.http_request_referrer = $.f!v;
+              } else if ($.f!k == 'HTTPResponse') then {
+                 set $.http_response_status_code = $.f!v;
+              } else if ($.f!k == 'ICMPCode') then {
+                 set $.icmp_code = $.f!v;
+              } else if ($.f!k == 'ICMPType') then {
+                 set $.icmp_type = $.f!v;
+              } else if ($.f!k == 'IPReputationSICategory') then {
+                 set $.ip_reputation_si_category = $.f!v;
+              } else if ($.f!k == 'IPSCount') then {
+                 set $.ips_count = $.f!v;
+              } else if ($.f!k == 'source_interface') then {
+                 set $.observer_ingress_interface_name = $.f!v;
+              } else if ($.f!k == 'IngressInterface') then {
+                 set $.observer_ingress_interface_name = $.f!v;
+              } else if ($.f!k == 'IngressZone') then {
+                 set $.observer_ingress_zone = $.f!v;
+              } else if ($.f!k == 'InitiatorBytes') then {
+                 set $.source_bytes = $.f!v;
+              } else if ($.f!k == 'InitiatorPackets') then {
+                 set $.source_packets = $.f!v;
+              } else if ($.f!k == 'InlineResult') then {
+                 set $.event_outcome = $.f!v;
+              } else if ($.f!k == 'IntrusionPolicy') then {
+                 set $.intrusion_policy = $.f!v;
+              } else if ($.f!k == 'MPLS_Label') then {
+                 set $.mpls_label = $.f!v;
+              } else if ($.f!k == 'Message') then {
+                 set $.message = $.f!v;
+              } else if ($.f!k == 'NAPPolicy') then {
+                 set $.nap_policy = $.f!v;
+              } else if ($.f!k == 'NetBIOSDomain') then {
+                 #target_field: host.hostname
+                 set $.net_bios_domain = $.f!v;
+              } else if ($.f!k == 'NumIOC') then {
+                 set $.num_ioc = $.f!v;
+              } else if ($.f!k == 'Prefilter Policy') then {
+                 set $.prefilter_policy = $.f!v;
+              } else if ($.f!k == 'Priority') then {
+                 set $.priority = $.f!v;
+              } else if ($.f!k == 'Protocol') then {
+                 set $.network_transport = $.f!v;
+              } else if ($.f!k == 'ReferencedHost') then {
+                 set $.url_domain = $.f!v;
+              } else if ($.f!k == 'ResponderBytes') then {
+                 set $.destination_bytes = $.f!v;
+              } else if ($.f!k == 'ResponderPackets') then {
+                 set $.destination_packets = $.f!v;
+              } else if ($.f!k == 'Revision') then {
+                 set $.revision = $.f!v;
+              } else if ($.f!k == 'SHA_Disposition') then {
+                 set $.sha_disposition = $.f!v;
+              } else if ($.f!k == 'SID') then {
+                 set $.sid = $.f!v;
+              } else if ($.f!k == 'SSLActualAction') then {
+                 set $.event_outcome = $.f!v;
+              } else if ($.f!k == 'SSLCertificate') then {
+                 set $.ssl_certificate = $.f!v;
+              } else if ($.f!k == 'SSLExpectedAction') then {
+                 set $.ssl_expected_action = $.f!v;
+              } else if ($.f!k == 'SSLFlowStatus') then {
+                 set $.ssl_flow_status = $.f!v;
+              } else if ($.f!k == 'SSLPolicy') then {
+                 set $.ssl_policy = $.f!v;
+              } else if ($.f!k == 'SSLRuleName') then {
+                 set $.ssl_rule_name = $.f!v;
+              } else if ($.f!k == 'SSLServerCertStatus') then {
+                 set $.ssl_server_cert_status = $.f!v;
+              } else if ($.f!k == 'SSLServerName') then {
+                 set $.server_domain = $.f!v;
+              } else if ($.f!k == 'SSLSessionID') then {
+                 set $.ssl_session_id = $.f!v;
+              } else if ($.f!k == 'SSLTicketID') then {
+                 set $.ssl_ticket_id = $.f!v;
+              } else if ($.f!k == 'SSLURLCategory') then {
+                 set $.sslurl_category = $.f!v;
+              } else if ($.f!k == 'SSLVersion') then {
+                 set $.ssl_version = $.f!v;
+              } else if ($.f!k == 'SSSLCipherSuite') then {
+                 set $.ssl_cipher_suite = $.f!v;
+              } else if ($.f!k == 'SecIntMatchingIP') then {
+                 set $.sec_int_matching_ip = $.f!v;
+              } else if ($.f!k == 'Security Group') then {
+                 set $.security_group = $.f!v;
+              } else if ($.f!k == 'SperoDisposition') then {
+                 set $.spero_disposition = $.f!v;
+              } else if ($.f!k == 'SrcIP') then {
+                 #source.address=SrcIP
+                 set $.source_ip = $.f!v;
+              } else if ($.f!k == 'SrcPort') then {
+                 set $.source_port = $.f!v;
+              } else if ($.f!k == 'TCPFlags') then {
+                 set $.tcp_flags = $.f!v;
+              } else if ($.f!k == 'ThreatName') then {
+                 set $.threat_name = $.f!v;
+              } else if ($.f!k == 'ThreatScore') then {
+                 set $.threat_score = $.f!v;
+              } else if ($.f!k == 'Tunnel or Prefilter Rule') then {
+                 set $.tunnel_or_prefilter_rule = $.f!v;
+              } else if ($.f!k == 'URI') then {
+                 set $.url_original = $.f!v;
+              } else if ($.f!k == 'URL') then {
+                 set $.url_original = $.f!v;
+              } else if ($.f!k == 'URLCategory') then {
+                 set $.url_category = $.f!v;
+              } else if ($.f!k == 'URLReputation') then {
+                 set $.url_reputation = $.f!v;
+              } else if ($.f!k == 'URLSICategory') then {
+                 set $.urlsi_category = $.f!v;
+              } else if ($.f!k == 'User') then {
+                 #target_field: user.id
+                 set $.user_name = $.f!v;
+              } else if ($.f!k == 'UserAgent') then {
+                 set $.user_agent_original = $.f!v;
+              } else if ($.f!k == 'VLAN_ID') then {
+                 set $.vlan_id = $.f!v;
+              } else if ($.f!k == 'WebApplication') then {
+                 set $.network_application = $.f!v;
+              } else if ($.f!k == 'originalClientSrcIP') then {
+                 #client.address=originalClientSrcIP
+                 set $.client_ip = $.f!v;
+              } else if ($.f!k == 'mapped_source_ip') then {
+                 set $.source_nat_ip = $.f!v;
+              } else if ($.f!k == 'mapped_source_port') then {
+                 set $.source_nat_port = $.f!v;
+              } else if ($.f!k == 'mapped_destination_ip') then {
+                 set $.destination_nat_ip = $.f!v;
+              } else if ($.f!k == 'mapped_destination_port') then {
+                 set $.destination_nat_port = $.f!v;
+              } else {
+                 set $.unknown = $.f!k;
+              }
+           }
+           if ($.event_code == '430001') then {
+              set $.event_action = "intrusion-detected";
+           } else if ($.event_code == '430002') then {
+              set $.event_action = "connection-started";
+           } else if ($.event_code == '430003') then {
+              set $.event_action = "connection-finished";
+           } else if ($.event_code == '430004') then {
+              set $.event_action = "file-detected";
+           } else if ($.event_code == '430005') then {
+              set $.event_action = "malware-detected";
+           } else {
+              set $.event_action = "unknown";
+           }
+           #https://github.com/rsyslog/rsyslog/issues/3938
+           #action(type="mmdblookup" mmdbfile="/etc/rsyslog.d/GeoLite2-City.mmdb" fields=[":continent:!continent!code", "!location", ":cityname:!city!names!en"] key="$.srcip")
+           #action(type="mmdblookup" mmdbfile="/etc/rsyslog.d/GeoLite2-City.mmdb" fields=[":continent:!continent!code", "!location", ":cityname:!city!names!en"] key="$.dstip")
+           # pipelineName="geoip-info"
+           action(type="omelasticsearch" server="elk-es-http.elk.svc.cluster.local:9200/logs-cisco_ftd63.log" template="FPSyslog-IPConEvents"
+              usehttps="on" skipverifyhost="on" allowunsignedcerts="on" uid="rsyslog" pwd="******"
+              writeoperation="create" bulkmode="on" action.resumeretrycount="-1"
+              queue.type="LinkedList"
+              queue.dequeuebatchsize="100"   # ES bulk size
+              queue.size="100000"
+              queue.workerthreads="3"
+           )
+        }
+        ### Forwarding to remote-syslog-server via TCP
+        #action(type="omfwd" Target="10.1.2.3" Port="514" Protocol="tcp" Template="tplPlainMsg"
+        #   queue.type="LinkedList"
+        #   queue.dequeuebatchsize="1000"   # bulk size
+        #   queue.size="10000"
+        #   queue.workerthreads="1"
+        #)
+    }
+    #######################################
+    #
+    ruleset(name="rulesetUDPGeneric") {
+        action(type="omelasticsearch" server="elk-es-http.elk.svc.cluster.local:9200/logs-network.log" template="plain-syslog"
+           usehttps="on" skipverifyhost="on" allowunsignedcerts="on" uid="rsyslog" pwd="******"
+           writeoperation="create" bulkmode="on" action.resumeretrycount="-1"
+           queue.type="LinkedList"
+           queue.dequeuebatchsize="100"   # ES bulk size
+           queue.size="100000"
+           queue.workerthreads="3"
+        )
+    }
+    #### RULESET-Bindings ####
+    input(type="imudp" port="9501" ruleset="rulesetUDPCheckPoint")
+    input(type="imudp" port="9544" ruleset="rulesetUDPf5LTM")
+    input(type="imudp" port="9003" ruleset="rulesetUDPCiscoFTD")
+    #input(type="imudp" port="9004" ruleset="rulesetUDPFortinetFW")
+    input(type="imudp" port="514" ruleset="rulesetUDPGeneric")
+  f5.rb: |
+    version=2
+    #http://www.liblognorm.com/files/manual/configuration.html
+    # rule=:%date:date-rfc3164% %host:word% %tag:char-to:\x3a%: no longer listening on %ip:ipv4%#%port:number%'
+    # rule=[<tag1>[,<tag2>...]]:<match description>
+    # %<field name>:<field type>[{<parameters>}]%
+    #{"type":"string-to", "name":"-", "extradata":":<"},
+    rule=:%[ {"type":"literal", "name":"-", "text":"<"},
+            {"type":"number", "name":"field1"},
+            {"type":"literal", "name":"-", "text":">"},
+            {"type":"number", "name":"PRI"},
+            {"type":"whitespace", "name":"-"},
+            {"type":"date-rfc5424", "name":"eventdate"},
+            {"type":"whitespace", "name":"-"},
+            {"type":"word", "name":"syslog5424_host"},
+            {"type":"whitespace", "name":"-"},
+            {"type":"word", "name":"logsource"},
+            {"type":"whitespace", "name":"-"},
+            {"type":"number", "name":"procid"},
+            {"type":"literal", "name":"-", "text":" ["},
+            {"name":"kvfields", "type":"repeat", "option.permitMismatchInParser":"true", "parser": [
+                        {"type":"char-to", "name":"k", "extradata":"="},
+                        {"type":"literal", "name":"-", "text":"="},
+                        {"type":"op-quoted-string", "name":"v"}
+                    ],
+                "while": {
+                        "type":"alternative", "parser": [
+                            {"type":"literal", "text":" "},
+                            {"type":"literal", "text":"  "}
+                         ]
+                    }
+            },
+            {"type":"rest", "name":"msg"}
+            ]%
+  ciscoFP.rb: |
+     version=2
+     #http://www.liblognorm.com/files/manual/configuration.html
+     rule=:%[
+        {"type":"literal", "name":"-", "text":"<"},
+        {"type":"number", "name":"field1"},
+        {"type":"literal", "name":"-", "text":">"},
+        {"type":"date-rfc5424", "name":"eventdate"},
+        {"type":"whitespace", "name":"-"},
+        {"type":"char-to", "name":"syslog5424_host", "extradata":" "},
+        {"type":"whitespace", "name":"-"},
+        {"type":"char-to", "name":"ciscoftd", "extradata":"-"},
+        {"type":"literal", "name":"-", "text":"-"},
+        {"type":"number", "name":"event.severity"},
+        {"type":"literal", "name":"-", "text":"-"},
+        {"type":"number", "name":"event_code"},
+        {"type":"literal", "name":"-", "text":":"},
+        {"type":"whitespace", "name":"-"},
+        {"name":"kvfields", "type":"repeat", "option.permitMismatchInParser":"false", "parser": [
+                        {"type":"char-to", "name":"k", "extradata":":"},
+                        {"type":"literal", "name":"-", "text":":"},
+                        {"type":"string", "name":"v", "quoting.char.begin":" ", "quoting.char.end":","}
+                ],
+            "while": {
+                    "type":"alternative", "parser": [
+                        {"type":"literal", "text":" "}
+                     ]
+                }
+        },
+        {"type":"rest", "name":"msg"}
+        ]%
+  cpfw.rb: |
+    version=2
+    #http://www.liblognorm.com/files/manual/configuration.html
+    rule=:%[ {"type":"literal", "name":"-", "text":"<"},
+       {"type":"number", "name":"field1"},
+       {"type":"literal", "name":"-", "text":">"},
+       {"type":"number", "name":"PRI"},
+       {"type":"whitespace", "name":"-"},
+       {"type":"date-rfc5424", "name":"eventdate"},
+       {"type":"whitespace", "name":"-"},
+       {"type":"word", "name":"syslog5424_host"},
+       {"type":"whitespace", "name":"-"},
+       {"type":"word", "name":"logsource"},
+       {"type":"whitespace", "name":"-"},
+       {"type":"number", "name":"procid"},
+       {"type":"literal", "name":"-", "text":" - ["},
+       {"name":"kvfields", "type":"repeat", "option.permitMismatchInParser":"false", "parser": [
+              {"type":"char-to", "name":"k", "extradata":":"},
+              {"type":"literal", "name":"-", "text":":"},
+              {"type":"op-quoted-string", "name":"v"},
+              {"type":"literal", "name":"-", "text":";"}
+           ],
+           "while": {
+              "type":"alternative", "parser": [
+                 {"type":"literal", "text":" "},
+                 {"type":"literal", "text":"  "}
+              ]
+           }
+       },
+       {"type":"rest", "name":"-"}
+       ]%
+  lookup_ftd.tbl: |
+    {
+      "version" : 1,
+      "nomatch" : "UnknownFW",
+      "type" : "string",
+      "table" : [
+         {"index" : "172.19.1.2", "value" : "Selfdefined-FirewallName" }
+       ]
+    }
+
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: rsyslog-deployment
+  namespace: logging
+  labels:
+    app: rsyslog4elk
+spec:
+  replicas: 3
+  selector:
+    matchLabels:
+      app: rsyslog4elk
+  template:
+    metadata:
+      labels:
+        app: rsyslog4elk
+    spec:
+      containers:
+      - name: rsyslog
+        #image: rsyslog/syslog_appliance_alpine
+        image: private-repository.default.svc.cluster.local:5000/rsyslog-container:alpine-3.15
+        ports:
+        - containerPort: 514
+        env:
+        - name: ENABLE_LOGFILES
+          value: "off"
+        - name: ENABLE_LOGSENE
+          value: "off"
+        - name: ENABLE_STATISTICS
+          value: "on"
+        #- name: RSYSLOG_DEBUG_FLAG
+        #  value: "-d"
+        livenessProbe:
+          #exec:
+          #  command:
+          #    - /bin/sh
+          #    - -c
+          #    - ps aux | grep rsyslog[d]
+          tcpSocket:
+            port: 514
+          initialDelaySeconds: 30
+          periodSeconds: 5
+          timeoutSeconds: 2 #Default 1
+        resources:
+          requests:
+            cpu: 500m
+            memory: 524Mi
+        volumeMounts:
+          - name: rsyslogconfig-volume
+            mountPath: /etc/rsyslog.conf
+            subPath: rsyslog.conf
+          - name: config-volume
+            mountPath: /etc/rsyslog.d
+          - name: spool-volume
+            mountPath: /rsyslog-queues
+      restartPolicy: Always
+      terminationGracePeriodSeconds: 60
+      volumes:
+      - name: rsyslogconfig-volume
+        configMap:
+          name: rsyslog-configmap
+          items:
+          - key: rsyslog.conf
+            path: rsyslog.conf
+            # Attention: configMap to File-Path will only be updated when a POD is created !!!
+      - name: config-volume
+        configMap:
+          name: rsyslog-d
+      - emptyDir: {}
+        name: spool-volume
