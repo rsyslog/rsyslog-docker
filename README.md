@@ -4,7 +4,7 @@
 
 **This repository's content has been fully integrated into the main `rsyslog/rsyslog` project.**
 
-All rsyslog documentation is now located in the `packaging/docler/` subdirectory of the main repository.
+The Docker documentation is now located in the [`packaging/docker/`](https://github.com/rsyslog/rsyslog/tree/main/packaging/docker) subdirectory of the main repository.
 
 -----
 
